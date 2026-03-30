@@ -26,7 +26,6 @@ class Term:
 
 @dataclass(frozen=True)
 class Var(Term):
-    """A logic variable (e.g. X, Y, A)."""
     name: str
     def __repr__(self) -> str:
         return self.name
@@ -34,7 +33,6 @@ class Var(Term):
 
 @dataclass(frozen=True)
 class Const(Term):
-    """A logic constant (e.g. sample identifier s42)."""
     name: str
     def __repr__(self) -> str:
         return self.name
@@ -46,7 +44,6 @@ Subst = Dict[Var, Union[Term, str]]
 
 @dataclass(frozen=True)
 class Atom:
-    """A predicate applied to a tuple of arguments: pred(arg1, arg2, ...)."""
     pred: Pred
     args: Tuple[Term, ...]
 
@@ -56,7 +53,6 @@ class Atom:
 
 @dataclass(frozen=True)
 class Clause:
-    """A Horn clause: head :- body[0], body[1], ..."""
     head: Atom
     body: Tuple[Atom, ...]
 
@@ -193,13 +189,7 @@ def prove(goal: Atom, program: List[Clause], depth: int = 20) -> bool:
 # =============================================================================
 # PART 2 — METARULES
 # =============================================================================
-# A MetaRule is a second-order clause template whose predicate positions
-# contain Vars.  The learner instantiates these to produce first-order clauses.
-#
-# Correspondence to Formal Metagol pseudocode:
-#   "choose metarule m such that mgu(head(m), e) = theta"
-#   "for each literal l in body(m): choose predicate p in L"
-# These two steps are implemented in generate_candidates().
+
 
 @dataclass(frozen=True)
 class MetaRule:
@@ -305,58 +295,6 @@ def _clause_key(clause: Clause) -> str:
 # =============================================================================
 # PART 3 — FORMAL METAGOL-STYLE LEARNER
 # =============================================================================
-#
-# This section implements the core Metagol algorithm as described in the
-# formal pseudocode:
-#
-#   Metagol(B, E+, E-, C):
-#     L := { all predicate heads in B }
-#     for d = 1 to Dmax:
-#       H := {}
-#       for e in E+:
-#         if (H, B) |= e then continue
-#         [choose metarule + predicates] -> add clause to H
-#       if all E+ provable and no E- provable: return H
-#
-# Key design decisions and how they relate to the pseudocode:
-#
-# (1) ITERATIVE DEEPENING (faithful):
-#     We loop d from 1 to Dmax.  At each d we start fresh with H = {}.
-#     We only return H if it is COMPLETE: all E+ covered, no E- covered.
-#
-# (2) RECURSIVE BACKTRACKING SEARCH (faithful):
-#     The "choose" operations in the pseudocode imply nondeterminism.
-#     We implement this as DFS with backtracking: _backtrack_search() picks
-#     the first uncovered positive, tries all candidate clauses, recurses,
-#     and backtracks if the subtree fails.
-#
-# (3) CANDIDATE GENERATION (faithful):
-#     generate_candidates() implements the two "choose" steps:
-#       - "choose metarule m such that mgu(head(m), e) = theta"
-#       - "for each literal l in body(m): choose predicate p in L"
-#     followed by the Generalize() step.
-#
-# (4) COVERAGE PRECOMPUTATION (practical optimization, documented):
-#     The formal pseudocode tests coverage via proof search.  Because our
-#     BK is purely propositional (unary ground facts), coverage can be
-#     checked by frozenset subset tests.  This is O(k) per (clause, sample)
-#     instead of O(n_clauses * depth) for SLD proof, making the search
-#     tractable.  The prover is still used at test time.
-#
-# (5) TWO-PHASE LEARNING (documented extension):
-#     Metagol formally requires complete coverage.  In our pipeline the BK
-#     derives from an imperfect surrogate, so complete coverage may be
-#     impossible for some classes (surrogate infidelity samples cannot be
-#     covered without violating negative constraints).  We handle this as:
-#       - Phase 1 (formal): strict iterative deepening, return H only if complete.
-#       - Phase 2 (fallback): greedy partial coverage, with honest reporting.
-#
-# (6) DOCUMENTED SIMPLIFICATIONS:
-#     - No predicate invention: all body predicates drawn from BK.
-#     - No recursive metarules: not needed for threshold-based classification.
-#     - Duplicate clause prevention by canonical key (same clause cannot
-#       appear twice in one hypothesis).
-
 
 # ---------------------------------------------------------------------------
 # Step 3a: Candidate generation with precomputed coverage
@@ -375,48 +313,19 @@ def generate_candidates(
     neg_sample_names: List[str],
     sample_facts: Dict[str, FrozenSet[str]],
 ) -> List[CandidateRecord]:
-    """
-    Generate all candidate clauses derivable by instantiating each metarule
-    with the given target predicate and background predicates.
 
-    This implements the two "choose" steps from the Formal Metagol pseudocode:
-        "choose metarule m s.t. mgu(head(m), e) = theta"
-        "for each literal l in body(m): choose predicate p in L"
-    followed by Generalize().
-
-    Coverage is precomputed using propositional frozenset lookup (see note above).
-
-    Parameters
-    ----------
-    target_pred      : The predicate being learned (e.g. "is_versicolor")
-    metarules        : List of MetaRule templates
-    predicate_symbols: L in the pseudocode — all predicate names from BK
-    pos_sample_names : Sample-identifier strings for positive examples
-    neg_sample_names : Sample-identifier strings for negative examples
-    sample_facts     : Maps each sample name to its set of true predicates
-
-    Returns
-    -------
-    List of (clause, pos_covered, neg_covered) triples.
-    Clauses are sorted by: most positives covered first, fewest negatives first.
-    """
-    # Use a template atom Atom(target_pred, (Var("A"),)) to unify with metarule heads.
-    # This fixes the head predicate while leaving the argument variable free.
     template = Atom(target_pred, (Var("_A"),))
 
     seen_keys: Set[str] = set()
     records: List[CandidateRecord] = []
 
     for mr in metarules:
-        # "choose metarule m s.t. mgu(head(m), e) = theta"
         theta = unify_atoms(mr.head, template, {})
         if theta is None:
-            continue  # metarule head doesn't unify with target
+            continue
 
         pred_vars = _pred_vars_in(mr)
 
-        # Build choices for each predicate-variable slot.
-        # The head predicate is already bound by theta; body slots range over L.
         choices: List[List[str]] = []
         for pv in pred_vars:
             if pv in theta and isinstance(theta[pv], str):
@@ -424,7 +333,7 @@ def generate_candidates(
             else:
                 choices.append(predicate_symbols)  # "choose predicate p in L"
 
-        # Enumerate all combinations of predicate assignments
+
         for assignment in itertools.product(*choices):
             sigma = dict(theta)
             valid = True
@@ -444,7 +353,7 @@ def generate_candidates(
             if any(not isinstance(b.pred, str) for b in cand_body):
                 continue
 
-            # Generalize() + normalize to canonical form
+
             candidate = _canonicalize(Clause(cand_head, cand_body))
             key = _clause_key(candidate)
 
@@ -452,8 +361,7 @@ def generate_candidates(
                 continue
             seen_keys.add(key)
 
-            # Precompute coverage via propositional frozenset lookup.
-            # A clause covers sample s iff every body predicate is in sample_facts[s].
+
             body_preds: Set[str] = {
                 b.pred for b in candidate.body if isinstance(b.pred, str)
             }
@@ -468,8 +376,7 @@ def generate_candidates(
 
             records.append((candidate, pos_covered, neg_covered))
 
-    # Sort: prefer clauses that cover more positives and fewer negatives.
-    # This heuristic speeds up the search by trying the most useful clauses first.
+
     records.sort(key=lambda r: (-len(r[1]), len(r[2])))
     return records
 
@@ -486,33 +393,7 @@ def _backtrack_search(
     hypothesis_keys: FrozenSet[str],
     depth_limit: int,
 ) -> Optional[List[Clause]]:
-    """
-    Recursive DFS over the hypothesis space.
 
-    Corresponds to the inner loop of the Formal Metagol pseudocode:
-
-        for e in E+:
-            if (H, B) |= e then continue
-            choose metarule m, instantiate, add Generalize(m) to H
-
-    The "choose" is implemented here as deterministic enumeration with
-    backtracking: we try each candidate in order, recurse, and backtrack
-    (by returning None) if the subtree fails.
-
-    Parameters
-    ----------
-    candidates       : Precomputed (clause, pos_cov, neg_cov) triples
-    all_pos_indices  : Frozenset of all positive example indices (0..n-1)
-    covered_pos      : Positive indices already covered by current hypothesis H
-    covered_neg      : Negative indices covered by H (must remain empty)
-    hypothesis_keys  : Canonical keys of clauses already in H (no duplicates)
-    depth_limit      : Maximum number of clauses allowed in this search (= d)
-
-    Returns
-    -------
-    List of clauses to append to H to complete it, or None if no completion
-    exists within the depth limit.
-    """
     uncovered = all_pos_indices - covered_pos
 
     # Base case: all positives are covered
@@ -525,12 +406,10 @@ def _backtrack_search(
     if len(hypothesis_keys) >= depth_limit:
         return None
 
-    # "for e in E+: if not (H,B) |= e" — pick the first uncovered positive
-    # Using min() gives a deterministic choice consistent with processing
-    # examples in the order they appear in E+.
+
     e = min(uncovered)
 
-    # Enumerate candidate clauses ("choose metarule m, choose predicates from L")
+    # Enumerate candidate clauses
     for candidate, pos_cov, neg_cov in candidates:
         key = _clause_key(candidate)
 
@@ -543,7 +422,7 @@ def _backtrack_search(
             continue
 
         # Consistency pruning: if adding this clause would cover any negative,
-        # prune this branch immediately (Formal Metagol's constraint check)
+        # prune this branch immediately
         new_neg_covered = covered_neg | neg_cov
         if new_neg_covered:
             continue
@@ -572,17 +451,7 @@ def _greedy_partial_fallback(
     candidates: List[CandidateRecord],
     all_pos_indices: FrozenSet[int],
 ) -> Optional[List[Clause]]:
-    """
-    Greedy fallback when no complete hypothesis exists within the depth bound.
 
-    Iteratively adds the clause that covers the most new positive examples
-    without covering any negative.  This is NOT part of formal Metagol; it
-    is an acknowledged extension for the case where the BK cannot support
-    complete coverage (e.g., due to surrogate infidelity).
-
-    Returns the best partial hypothesis found, or None if no consistent
-    clause exists at all.
-    """
     covered_pos: FrozenSet[int] = frozenset()
     hypothesis: List[Clause] = []
     used_keys: Set[str] = set()
@@ -615,41 +484,7 @@ def metagol(
     metarules: List[MetaRule],
     dmax: int = 4,
 ) -> Tuple[Optional[List[Clause]], bool]:
-    """
-    Metagol-style inductive learning with iterative deepening and backtracking.
 
-    Implements the Formal Metagol pseudocode:
-
-        Metagol(B, E+, E-, C):
-            L := { all predicate heads in B }
-            for d = 1 to Dmax:
-                H := {}
-                [recursive backtracking search for H of size <= d]
-                if B ∪ H |= all E+ and B ∪ H ⊬ any E-:
-                    return H
-
-    Parameters
-    ----------
-    background  : Background knowledge (ground facts from symbolic BK)
-    positives   : Positive examples E+ (atoms to be proved)
-    negatives   : Negative examples E- (atoms that must NOT be proved)
-    metarules   : Second-order templates C
-    dmax        : Maximum hypothesis size (Dmax in pseudocode)
-
-    Returns
-    -------
-    (hypothesis, is_complete) where:
-      - hypothesis     : List of learned clauses (or None if nothing found)
-      - is_complete    : True if all positives are covered (formal Metagol result);
-                         False if only partial coverage was achieved via fallback.
-
-    Documented simplifications:
-      - No predicate invention (all body predicates from BK).
-      - No recursive metarules.
-      - Coverage precomputed by frozenset ops instead of proof search
-        (valid because BK is propositional unary ground facts).
-      - Two-phase: strict search first, greedy fallback second.
-    """
     if not positives:
         return [], True
 
@@ -674,9 +509,7 @@ def metagol(
 
     all_pos_indices = frozenset(range(len(positives)))
 
-    # -------------------------------------------------------------------------
-    # Phase 1 — Formal Metagol: iterative deepening with backtracking
-    # -------------------------------------------------------------------------
+
     # "for d = 1 to Dmax: H := {}; [search]; if complete: return H"
     for d in range(1, dmax + 1):
         result = _backtrack_search(
@@ -690,25 +523,13 @@ def metagol(
         if result is not None:
             return result, True   # COMPLETE hypothesis found
 
-    # -------------------------------------------------------------------------
-    # Phase 2 — Greedy fallback for partial coverage
-    # -------------------------------------------------------------------------
-    # This phase is NOT part of formal Metagol.  It handles the case where
-    # complete coverage is impossible because some positive examples correspond
-    # to surrogate infidelity cases: the black-box predicted class c for sample x,
-    # but the surrogate classified x differently, so no combination of
-    # surrogate-threshold predicates can cover x as class c without error.
+
     partial = _greedy_partial_fallback(candidates, all_pos_indices)
     return partial, False   # PARTIAL hypothesis (not all positives covered)
 
 
 def _build_sample_facts(background: List[Clause]) -> Dict[str, FrozenSet[str]]:
-    """
-    Build an index: sample_name -> frozenset of true predicate names.
 
-    Used for O(k) propositional coverage checks during learning.
-    The prover (prove()) is still used at prediction time.
-    """
     index: Dict[str, Set[str]] = defaultdict(set)
     for clause in background:
         if not clause.body:   # ground fact
@@ -723,7 +544,7 @@ def _build_sample_facts(background: List[Clause]) -> Dict[str, FrozenSet[str]]:
 # =============================================================================
 # PART 4 — SYMBOLIC BACKGROUND KNOWLEDGE EXTRACTION
 # =============================================================================
-# Unchanged from v1.
+
 
 def _sanitize(name: str) -> str:
     return (
@@ -757,13 +578,7 @@ def build_background_knowledge(
     X: pd.DataFrame,
     thresholds: Dict[str, Set[float]],
 ) -> Tuple[List[Clause], List[Const]]:
-    """
-    Convert a dataset into symbolic background knowledge.
 
-    For every sample x_i and every surrogate threshold, we assert exactly one of:
-        feature_le_threshold(s_i).   if x_i[feature] <= threshold
-        feature_gt_threshold(s_i).   otherwise
-    """
     background: List[Clause] = []
     sample_ids: List[Const] = []
 
@@ -903,18 +718,7 @@ def run_pipeline(
     random_state: int = 42,
     verbose: bool = True,
 ) -> Dict:
-    """
-    Execute the complete hybrid interpretable learning pipeline.
 
-    Steps:
-      1  Load data
-      2  Train black-box (RandomForest)
-      3  Train surrogate tree (mimics black-box)
-      4  Extract symbolic background knowledge from surrogate
-      5  Build positive/negative examples (one-vs-rest per class)
-      6  Run Formal Metagol-style learner for each class
-      7  Evaluate: bb_accuracy, surr_fidelity, logic_coverage, fidelity, accuracy
-    """
 
     def log(msg: str) -> None:
         if verbose:
